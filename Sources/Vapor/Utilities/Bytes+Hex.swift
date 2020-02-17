@@ -1,10 +1,6 @@
 extension Collection where Element == UInt8 {
-    public var hex: String {
-        self.hexEncodedString()
-    }
-
-    public func hexEncodedString(uppercase: Bool = false) -> String {
-        return String(decoding: self.hexEncodedBytes(uppercase: uppercase), as: Unicode.UTF8.self)
+    func hexEncodedString(uppercase: Bool = false) -> String {
+        return String(decoding: hexEncodedBytes(uppercase: uppercase), as: Unicode.UTF8.self)
     }
 
     func hexEncodedBytes(uppercase: Bool = false) -> [UInt8] {

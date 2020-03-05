@@ -9,6 +9,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+    - name: Switch XCode Version
+      run: sudo xcode-select -s /Applications/Xcode_11.4_beta.app
     - name: Testing for macOS
       uses: undefinedlabs/scope-for-swift-action@v1
       with:

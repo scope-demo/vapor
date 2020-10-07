@@ -1,7 +1,7 @@
 @testable import Vapor
 import XCTest
 
-final class HTTPHeaderValueTests: XCTestCase {
+final class HTTPHeaderTests: XCTestCase {
     func testValue() throws {
         var parser = HTTPHeaders.DirectiveParser(string: "foobar")
         XCTAssertEqual(parser.nextDirectives(), [.init(value: "foobar")])
@@ -161,6 +161,7 @@ final class HTTPHeaderValueTests: XCTestCase {
             ("cookie", "vapor-session=0FuTYcHmGw7Bz1G4HiF+EA==; _ga=GA1.1.500315824.1585154561; _gid=GA1.1.500224287.1585154561")
         ])
         XCTAssertEqual(headers.cookie?["vapor-session"]?.string, "0FuTYcHmGw7Bz1G4HiF+EA==")
+        XCTAssertEqual(headers.cookie?["vapor-session"]?.sameSite, .lax)
         XCTAssertEqual(headers.cookie?["_ga"]?.string, "GA1.1.500315824.1585154561")
         XCTAssertEqual(headers.cookie?["_gid"]?.string, "GA1.1.500224287.1585154561")
     }
@@ -195,5 +196,16 @@ final class HTTPHeaderValueTests: XCTestCase {
         let lower = HTTPMediaType(type: "foo", subType: "bar")
         let upper = HTTPMediaType(type: "foo", subType: "BAR")
         XCTAssertEqual(lower, upper)
+    }
+
+    // https://github.com/vapor/vapor/issues/2439
+    func testContentDispositionQuotedFilename() throws {
+        var headers = HTTPHeaders()
+        headers.contentDisposition = .init(.formData, filename: "foo")
+        XCTAssertEqual(headers.first(name: .contentDisposition), "form-data; filename=foo")
+        headers.contentDisposition = .init(.formData, filename: "foo bar")
+        XCTAssertEqual(headers.first(name: .contentDisposition), #"form-data; filename="foo bar""#)
+        headers.contentDisposition = .init(.formData, filename: "foo\"bar")
+        XCTAssertEqual(headers.first(name: .contentDisposition), #"form-data; filename="foo\"bar""#)
     }
 }

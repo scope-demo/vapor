@@ -12,7 +12,7 @@ final class ClientTests: XCTestCase {
             $0.redirect(to: "foo")
         }
 
-        try app.server.start(hostname: "localhost", port: 8080)
+        try app.server.start(address: .hostname("localhost", port: 8080))
         defer { app.server.shutdown() }
 
         let res = try app.client.get("http://localhost:8080/redirect").wait()
@@ -30,7 +30,7 @@ final class ClientTests: XCTestCase {
             $0.redirect(to: "foo")
         }
 
-        try app.server.start(hostname: "localhost", port: 8080)
+        try app.server.start(address: .hostname("localhost", port: 8080))
         defer { app.server.shutdown() }
 
         _ = try app.client.get("http://localhost:8080/redirect").wait()
@@ -71,11 +71,7 @@ final class ClientTests: XCTestCase {
     }
     
     func testBoilerplateClient() throws {
-        let app = Application(.init(
-            name: "xctest",
-            arguments: ["vapor", "serve", "-b", "localhost:8080", "--log", "trace"]
-        ))
-        try LoggingSystem.bootstrap(from: &app.environment)
+        let app = Application(.testing)
         defer { app.shutdown() }
 
         app.get("foo") { req -> EventLoopFuture<String> in

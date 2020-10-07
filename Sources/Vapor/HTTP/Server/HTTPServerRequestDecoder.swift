@@ -1,7 +1,7 @@
 import NIO
 import NIOHTTP1
 
-final class HTTPServerRequestDecoder: ChannelDuplexHandler, RemovableChannelHandler {
+final class HTTPServerRequestDecoder: ChannelInboundHandler, RemovableChannelHandler {
     typealias InboundIn = HTTPServerRequestPart
     typealias InboundOut = Request
     typealias OutboundIn = Never
@@ -11,18 +11,20 @@ final class HTTPServerRequestDecoder: ChannelDuplexHandler, RemovableChannelHand
         case awaitingBody(Request)
         case awaitingEnd(Request, ByteBuffer)
         case streamingBody(Request.BodyStream)
+        case skipping
     }
 
     var requestState: RequestState
     var bodyStreamState: HTTPBodyStreamState
 
-    private let logger: Logger
+    var logger: Logger {
+        self.application.logger
+    }
     var application: Application
     
     init(application: Application) {
         self.application = application
         self.requestState = .ready
-        self.logger = Logger(label: "codes.vapor.server")
         self.bodyStreamState = .init()
     }
     
@@ -55,30 +57,29 @@ final class HTTPServerRequestDecoder: ChannelDuplexHandler, RemovableChannelHand
             }
         case .body(let buffer):
             switch self.requestState {
-            case .ready: assertionFailure("Unexpected state: \(self.requestState)")
+            case .ready, .awaitingEnd: 
+                assertionFailure("Unexpected state: \(self.requestState)")
             case .awaitingBody(let request):
-                self.requestState = .awaitingEnd(request, buffer)
-            case .awaitingEnd(let request, let previousBuffer):
-                let stream = Request.BodyStream(on: context.eventLoop)
-                request.bodyStorage = .stream(stream)
-                context.fireChannelRead(self.wrapInboundOut(request))
-                self.handleBodyStreamStateResult(
-                    context: context,
-                    self.bodyStreamState.didReadBytes(previousBuffer),
-                    stream: stream
-                )
-                self.handleBodyStreamStateResult(
-                    context: context,
-                    self.bodyStreamState.didReadBytes(buffer),
-                    stream: stream
-                )
-                self.requestState = .streamingBody(stream)
+                if request.headers.first(name: .contentLength) == buffer.readableBytes.description {
+                    self.requestState = .awaitingEnd(request, buffer)
+                } else {
+                    let stream = Request.BodyStream(on: context.eventLoop)
+                    request.bodyStorage = .stream(stream)
+                    self.requestState = .streamingBody(stream)
+                    context.fireChannelRead(self.wrapInboundOut(request))
+                    self.handleBodyStreamStateResult(
+                        context: context,
+                        self.bodyStreamState.didReadBytes(buffer),
+                        stream: stream
+                    )
+                }
             case .streamingBody(let stream):
                 self.handleBodyStreamStateResult(
                     context: context,
                     self.bodyStreamState.didReadBytes(buffer),
                     stream: stream
                 )
+            case .skipping: break
             }
         case .end(let tailHeaders):
             assert(tailHeaders == nil, "Tail headers are not supported.")
@@ -95,6 +96,7 @@ final class HTTPServerRequestDecoder: ChannelDuplexHandler, RemovableChannelHand
                     self.bodyStreamState.didEnd(),
                     stream: stream
                 )
+            case .skipping: break
             }
             self.requestState = .ready
         }
@@ -127,6 +129,20 @@ final class HTTPServerRequestDecoder: ChannelDuplexHandler, RemovableChannelHand
         context.fireErrorCaught(error)
     }
 
+    func channelInactive(context: ChannelHandlerContext) {
+        switch self.requestState {
+        case .streamingBody(let stream):
+            self.handleBodyStreamStateResult(
+                context: context,
+                self.bodyStreamState.didEnd(),
+                stream: stream
+            )
+        default:
+            break
+        }
+        context.fireChannelInactive()
+    }
+
     func handleBodyStreamStateResult(
         context: ChannelHandlerContext,
         _ result: HTTPBodyStreamState.Result,
@@ -143,13 +159,13 @@ final class HTTPServerRequestDecoder: ChannelDuplexHandler, RemovableChannelHand
                         self.bodyStreamState.didError(error),
                         stream: stream
                     )
-                case .success:
-                    self.handleBodyStreamStateResult(
-                        context: context,
-                        self.bodyStreamState.didWrite(),
-                        stream: stream
-                    )
+                case .success: break
                 }
+                self.handleBodyStreamStateResult(
+                    context: context,
+                    self.bodyStreamState.didWrite(),
+                    stream: stream
+                )
             }
         case .close(let maybeError):
             if let error = maybeError {
@@ -160,6 +176,57 @@ final class HTTPServerRequestDecoder: ChannelDuplexHandler, RemovableChannelHand
         }
         if result.callRead {
             context.read()
+        }
+    }
+
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        switch event {
+        case is HTTPServerResponseEncoder.ResponseEndSentEvent:
+            switch self.requestState {
+            case .streamingBody(let bodyStream):
+                // Response ended during request stream.
+                if !bodyStream.isBeingRead {
+                    self.logger.trace("Response already sent, draining unhandled request stream.")
+                    bodyStream.read { _, promise in
+                        promise?.succeed(())
+                    }
+                }
+            case .awaitingBody, .awaitingEnd:
+                // Response ended before request started streaming.
+                self.logger.trace("Response already sent, skipping request body.")
+                self.requestState = .skipping
+            case .ready, .skipping:
+                // Response ended after request had been read.
+                break
+            }
+        case is ChannelShouldQuiesceEvent:
+            switch self.requestState {
+            case .ready:
+                self.logger.trace("Closing keep-alive HTTP connection since server is going away")
+                context.channel.close(mode: .all, promise: nil)
+            default:
+                self.logger.debug("A request is currently in-flight")
+                context.fireUserInboundEventTriggered(event)
+            }
+        default:
+            self.logger.trace("Unhandled user event: \(event)")
+        }
+    }
+}
+
+extension HTTPPart: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .head(let head):
+            return "head: \(head)"
+        case .body(let body):
+            return "body: \(body)"
+        case .end(let headers):
+            if let headers = headers {
+                return "end: \(headers)"
+            } else {
+                return "end"
+            }
         }
     }
 }

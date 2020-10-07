@@ -25,13 +25,44 @@ public struct Validation {
         }
     }
     
-    init(key: ValidationKey, required: Bool, nested validations: Validations) {
+    init(nested key: ValidationKey, required: Bool, keyed validations: Validations) {
         self.init { container in
             let result: ValidatorResult
             do {
-                let nested = try container.nestedContainer(keyedBy: ValidationKey.self, forKey: key)
-                let results = validations.validate(nested)
-                result = ValidatorResults.Nested(results: results.results)
+                if container.contains(key), !required, try container.decodeNil(forKey: key) {
+                    result = ValidatorResults.Skipped()
+                } else if container.contains(key) {
+                    let nested = try container.nestedContainer(keyedBy: ValidationKey.self, forKey: key)
+                    let results = validations.validate(nested)
+                    result = ValidatorResults.Nested(results: results.results)
+                } else if required {
+                    result = ValidatorResults.Missing()
+                } else {
+                    result = ValidatorResults.Skipped()
+                }
+            } catch {
+                result = ValidatorResults.Codable(error: error)
+            }
+            return .init(key: key, result: result)
+        }
+    }
+    
+    init(nested key: ValidationKey, required: Bool, unkeyed factory: @escaping (Int, inout Validations) -> ()) {
+        self.init { container in
+            let result: ValidatorResult
+            do {
+                var results: [[ValidatorResult]] = []
+                var array = try container.nestedUnkeyedContainer(forKey: key)
+                var i = 0
+                while !array.isAtEnd {
+                    defer { i += 1 }
+                    var validations = Validations()
+                    factory(i, &validations)
+                    let nested = try array.nestedContainer(keyedBy: ValidationKey.self)
+                    let result = validations.validate(nested)
+                    results.append(result.results)
+                }
+                result = ValidatorResults.NestedEach(results: results)
             } catch {
                 result = ValidatorResults.Codable(error: error)
             }
